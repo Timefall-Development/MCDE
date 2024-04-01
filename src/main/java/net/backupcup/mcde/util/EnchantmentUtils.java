@@ -1,22 +1,16 @@
 package net.backupcup.mcde.util;
 
-import static net.backupcup.mcde.util.SlotPosition.FIRST;
-import static net.backupcup.mcde.util.SlotPosition.SECOND;
-import static net.backupcup.mcde.util.SlotPosition.THIRD;
 import static net.minecraft.registry.Registries.ENCHANTMENT;
 
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import it.unimi.dsi.fastutil.objects.ObjectArrayList;
-import net.backupcup.mcde.Config.SlotChances;
 import net.backupcup.mcde.MCDEnchantments;
 import net.minecraft.enchantment.Enchantment;
 import net.minecraft.enchantment.EnchantmentHelper;
@@ -30,7 +24,6 @@ import net.minecraft.screen.ScreenHandlerListener;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.util.Formatting;
 import net.minecraft.util.Identifier;
-import net.minecraft.util.Util;
 import net.minecraft.util.math.random.LocalRandom;
 import net.minecraft.util.math.random.Random;
 
@@ -49,7 +42,7 @@ public class EnchantmentUtils {
 
     public static Stream<Identifier> getAllEnchantmentsForItem(ItemStack itemStack) {
         Predicate<Enchantment> target = itemStack.isIn(ModTags.Items.WEAPONS) ?
-            e -> e.target.equals(EnchantmentTarget.WEAPON) :
+            e -> e.target.equals(EnchantmentTarget.WEAPON) || e.isAcceptableItem(itemStack) :
             e -> e.isAcceptableItem(itemStack);
 
         return ENCHANTMENT.stream()
@@ -66,6 +59,10 @@ public class EnchantmentUtils {
             .filter(target -> target.isAcceptableItem(item)).toList();
     }
 
+    public static Enchantment getEnchantment(Identifier enchantmentId) {
+        return ENCHANTMENT.get(enchantmentId);
+    }
+
     public static Identifier getEnchantmentId(Enchantment enchantment) {
         return ENCHANTMENT.getId(enchantment);
     }
@@ -74,121 +71,14 @@ public class EnchantmentUtils {
         return MCDEnchantments.getConfig().isEnchantmentPowerful(id) ? Formatting.RED : Formatting.LIGHT_PURPLE;
     }
 
-    public static EnchantmentSlots generateEnchantments(ItemStack itemStack, Optional<ServerPlayerEntity> optionalPlayer) {
-        return generateEnchantments(itemStack, optionalPlayer, new LocalRandom(System.nanoTime()));
-    }
-
     public static boolean isCompatible(Collection<Identifier> present, Identifier enchantment) {
         return present.stream().allMatch(id -> ENCHANTMENT.get(enchantment).canCombine(ENCHANTMENT.get(id)));
     }
 
-    public static void removeIncompatible(List<Identifier> pool, EnchantmentSlots.Builder builder) {
-        var present = builder.getAdded().stream().map(c -> c.getEnchantmentId()).toList();
-        pool.removeIf(id -> !isCompatible(present, id));
+    public static boolean isCompatible(Identifier present, Identifier enchantment) {
+        return ENCHANTMENT.get(enchantment).canCombine(ENCHANTMENT.get(present));
     }
 
-    public static SlotChances calculateAdvancementModifiers(ServerPlayerEntity player) {
-        return MCDEnchantments.getConfig().getProgressChances().entrySet().stream()
-            .filter(kvp -> player.getAdvancementTracker().getProgress(player.server.getAdvancementLoader().get(kvp.getKey())).isDone())
-            .map(Map.Entry::getValue)
-            .reduce(new SlotChances(), SlotChances::add);
-    }
-
-    public static float calculateEnchantabilityModifier(float baseChance, int enchantability) {
-        // Some magic math here. The idea is to make low enchantability add less chance than high one
-        // the significance function really can be any other one
-        // one requirement for such function is its values should be from 0 to 1
-        float significance = (float)(1 / Math.PI * Math.atan(0.2 * (enchantability - 20)) + 0.5);
-        return -significance * baseChance + significance;
-    }
-
-    public static EnchantmentSlots generateEnchantments(ItemStack itemStack, Optional<ServerPlayerEntity> optionalPlayer, Random random) {
-        var enchantability = itemStack.getItem().getEnchantability();
-        var builder = EnchantmentSlots.builder();
-        var pool = getEnchantmentsForItem(itemStack).collect(ObjectArrayList.toList());
-        boolean isTwoChoiceGenerated = false;
-        boolean isSecondSlotGenerated = false;
-        float threeChoiceChance = 0.5f + enchantability / 100f;
-        float secondSlotChance = MCDEnchantments.getConfig().getSecondSlotBaseChance();
-        float thirdSlotChance = MCDEnchantments.getConfig().getThirdSlotBaseChance();
-
-        if (optionalPlayer.isPresent()) {
-            var advancementModifier = calculateAdvancementModifiers(optionalPlayer.get());
-            secondSlotChance += advancementModifier.getSecondChance();
-            thirdSlotChance += advancementModifier.getThirdChance();
-            secondSlotChance += calculateEnchantabilityModifier(secondSlotChance, enchantability);
-            thirdSlotChance += calculateEnchantabilityModifier(thirdSlotChance, enchantability);
-            pool.removeIf(getLockedEnchantments(optionalPlayer.get())::contains);
-        };
-
-        if (MCDEnchantments.getConfig().isCompatibilityRequired()) {
-            pool.removeIf(id -> !isCompatible(
-                EnchantmentHelper.get(itemStack).keySet()
-                .stream().map(EnchantmentHelper::getEnchantmentId).toList(), id));
-        }
-
-        if (pool.isEmpty()) {
-            return EnchantmentSlots.EMPTY;
-        }
-
-        Util.shuffle(pool, random);
-
-        if (random.nextFloat() < threeChoiceChance && pool.size() >= 3) {
-            builder.withSlot(FIRST, pool.pop(), pool.pop(), pool.pop());
-        }
-        else if (pool.size() >= 2) {
-            builder.withSlot(FIRST, pool.pop(), pool.pop());
-            isTwoChoiceGenerated = true;
-        }
-        else {
-            builder.withSlot(FIRST, pool.pop());
-        }
-
-        if (MCDEnchantments.getConfig().isCompatibilityRequired()) {
-            removeIncompatible(pool, builder);
-        }
-
-        if (pool.isEmpty()) {
-            return builder.build();
-        }
-
-        if (random.nextFloat() < secondSlotChance) {
-            if (!isTwoChoiceGenerated && random.nextFloat() < threeChoiceChance && pool.size() >= 3) {
-                builder.withSlot(SECOND, pool.pop(), pool.pop(), pool.pop());
-            }
-            else if (pool.size() >= 2) {
-                builder.withSlot(SECOND, pool.pop(), pool.pop());
-                isTwoChoiceGenerated = true;
-            }
-            else {
-                builder.withSlot(SECOND, pool.pop());
-            }
-            isSecondSlotGenerated = true;
-        }
-
-        if (MCDEnchantments.getConfig().isCompatibilityRequired()) {
-            removeIncompatible(pool, builder);
-        }
-
-        if (pool.isEmpty()) {
-            return builder.build();
-        }
-
-        if (isSecondSlotGenerated && random.nextFloat() < thirdSlotChance) {
-            if (!isTwoChoiceGenerated && random.nextFloat() < threeChoiceChance && pool.size() >= 3) {
-                builder.withSlot(THIRD, pool.pop(), pool.pop(), pool.pop());
-            }
-            else if (pool.size() >= 2) {
-                builder.withSlot(THIRD, pool.pop(), pool.pop());
-                isTwoChoiceGenerated = true;
-            }
-            else {
-                builder.withSlot(THIRD, pool.pop());
-            }
-        }
-
-        return builder.build();
-    }
 
     public static ScreenHandlerListener generatorListener(ScreenHandlerContext context, PlayerEntity player) {
         return new ScreenHandlerListener() {
@@ -198,13 +88,17 @@ public class EnchantmentUtils {
 
             @Override
             public void onSlotUpdate(ScreenHandler handler, int slotId, ItemStack stack) {
-                if (slotId != 0 || stack.isEmpty() || EnchantmentSlots.fromItemStack(stack) != null) {
+                if (slotId != 0 || stack.isEmpty() || EnchantmentSlots.fromItemStack(stack).isPresent()) {
                     return;
                 }
                 context.run((world, pos) -> {
                     var server = world.getServer();
-                    var serverPlayer = Optional.ofNullable(server.getPlayerManager().getPlayer(player.getUuid()));
-                    EnchantmentUtils.generateEnchantments(stack, serverPlayer).updateItemStack(stack);
+                    var serverPlayerEntity = Optional.ofNullable(server.getPlayerManager().getPlayer(player.getUuid()));
+                    SlotsGenerator.forItemStack(stack)
+                        .withOptionalOwner(serverPlayerEntity)
+                        .build()
+                        .generateEnchantments()
+                        .updateItemStack(stack);
                     handler.setStackInSlot(0, 0, stack);
                 });
             }
@@ -220,6 +114,9 @@ public class EnchantmentUtils {
     }
 
     public static Set<Identifier> getLockedEnchantments(ServerPlayerEntity player) {
+        if (player.isCreative()) {
+            return Set.of();
+        }
         var advancements = player.server.getAdvancementLoader().getAdvancements();
         var tracker = player.getAdvancementTracker();
         var unlocks = MCDEnchantments.getConfig().getUnlocks().stream()
@@ -244,10 +141,11 @@ public class EnchantmentUtils {
         var present = EnchantmentHelper.get(itemStack).keySet().stream()
             .map(key -> ENCHANTMENT.getId(key))
             .collect(Collectors.toSet());
-        var slots = EnchantmentSlots.fromItemStack(itemStack);
-        if (slots == null) {
+        var slotsOptional = EnchantmentSlots.fromItemStack(itemStack);
+        if (slotsOptional.isEmpty()) {
             return present;
         }
+        var slots = slotsOptional.get();
         slots.stream()
             .flatMap(s -> s.choices().stream())
             .map(c -> c.getEnchantmentId()).forEach(present::add);
@@ -261,6 +159,12 @@ public class EnchantmentUtils {
         return candidates;
     }
 
+    public static boolean isGilding(Enchantment enchantment, ItemStack itemStack) {
+        return EnchantmentSlots.fromItemStack(itemStack)
+                .map(slots -> slots.getGildingIds().contains(EnchantmentUtils.getEnchantmentId(enchantment)))
+                .orElse(false);
+    }
+
     private static List<Identifier> getPossibleCandidates(ItemStack itemStack) {
         var present = getAllEnchantmentsInItem(itemStack);
         var candidates = getAllEnchantmentsForItem(itemStack)
@@ -270,4 +174,6 @@ public class EnchantmentUtils {
         }
          return candidates.toList();
     }
+
+
 }

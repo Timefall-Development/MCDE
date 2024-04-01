@@ -1,10 +1,15 @@
 package net.backupcup.mcde.util;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
+import net.minecraft.enchantment.Enchantment;
+import net.minecraft.enchantment.EnchantmentHelper;
+import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NbtCompound;
 import net.minecraft.registry.Registries;
 import net.minecraft.util.Identifier;
@@ -77,6 +82,14 @@ public class EnchantmentSlot {
         return chosen.map(pos -> level >= Registries.ENCHANTMENT.get(enchantments.get(pos)).getMaxLevel()).orElse(false);
     }
 
+    public void removeChosenEnchantment(ItemStack itemStack) {
+        getChosen().ifPresent(c -> {
+            var enchantments = EnchantmentHelper.get(itemStack);
+            enchantments.remove(c.getEnchantment());
+            EnchantmentHelper.set(enchantments, itemStack);
+        });
+    }
+
     public static EnchantmentSlot of(SlotPosition slot, Identifier first) {
         return new EnchantmentSlot(slot, Map.of(SlotPosition.FIRST, first));
     }
@@ -91,7 +104,21 @@ public class EnchantmentSlot {
 
     @Override
     public String toString() {
-        return String.format("%s (%s)", enchantments, chosen);
+        var builder = new StringBuilder();
+        builder.append('[');
+        builder.append(Arrays.stream(SlotPosition.values()).flatMap(pos -> {
+            if (!enchantments.containsKey(pos)) {
+                return Stream.empty();
+            }
+
+            if (chosen.isPresent() && pos == chosen.get()) {
+                return Stream.of(String.format("(%s {%d})", enchantments.get(pos), level));
+            }
+
+            return Stream.of(enchantments.get(pos).toString());
+        }).collect(Collectors.joining(", ")));
+        builder.append(']');
+        return builder.toString();
     }
 
     public NbtCompound toNbt() {
@@ -102,20 +129,24 @@ public class EnchantmentSlot {
         root.put("Choices", choices);
         if (chosen.isPresent()) {
             root.putString("Chosen", chosen.get().name());
-            root.putInt("Level", level);
         }
         return root;
     }
 
-    public static EnchantmentSlot fromNbt(NbtCompound nbt, SlotPosition slot) {
+    public static EnchantmentSlot fromNbt(NbtCompound nbt, SlotPosition slot, Map<Enchantment, Integer> enchantments) {
         var choices = nbt.getCompound("Choices");
-        var newSlot = new EnchantmentSlot(slot, choices.getKeys().stream()
+        var choiceMap = choices.getKeys().stream()
                 .collect(Collectors.toMap(
                     key -> SlotPosition.valueOf(key),
                     key -> Identifier.tryParse(choices.getString(key))
-                )));
+                ));
+        choiceMap.entrySet().removeIf(entry -> EnchantmentUtils.getEnchantment(entry.getValue()) == null);
+        var newSlot = new EnchantmentSlot(slot, choiceMap);
         if (nbt.contains("Chosen")) {
-            newSlot.setChosen(SlotPosition.valueOf(nbt.getString("Chosen")), nbt.getShort("Level"));
+            var chosenSlot = SlotPosition.valueOf(nbt.getString("Chosen"));
+            if (choiceMap.containsKey(chosenSlot)) {
+                newSlot.setChosen(chosenSlot, enchantments.getOrDefault(EnchantmentUtils.getEnchantment(choiceMap.get(chosenSlot)), 0));
+            }
         }
         return newSlot;
     }

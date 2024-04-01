@@ -11,6 +11,7 @@ import net.backupcup.mcde.block.ModBlocks;
 import net.backupcup.mcde.util.EnchantmentSlots;
 import net.backupcup.mcde.util.EnchantmentUtils;
 import net.backupcup.mcde.util.SlotPosition;
+import net.backupcup.mcde.util.SlotsGenerator;
 import net.fabricmc.fabric.api.networking.v1.PacketByteBufs;
 import net.fabricmc.fabric.api.networking.v1.PacketSender;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
@@ -36,16 +37,17 @@ import net.minecraft.util.Identifier;
 public class RollBenchScreenHandler extends ScreenHandler implements ScreenHandlerListener {
     private final Inventory inventory = new SimpleInventory(2);
     private final ScreenHandlerContext context;
-    private final PlayerEntity player;
+    private final PlayerEntity playerEntity;
     private Map<SlotPosition, Boolean> locked = new EnumMap<>(Map.of(SlotPosition.FIRST, false, SlotPosition.SECOND, false, SlotPosition.THIRD, false));
     public static final Identifier LOCKED_SLOTS_PACKET = Identifier.of(MCDEnchantments.MOD_ID, "locked_slots");
+    public static final int REROLL_BUTTON_ID = -1;
 
     public Inventory getInventory() {
         return inventory;
     }
 
-    public boolean isSlotLocked(SlotPosition slot) {
-        return locked.get(slot);
+    public Optional<Boolean> isSlotLocked(SlotPosition slot) {
+        return Optional.ofNullable(locked.get(slot));
     }
 
     public RollBenchScreenHandler(int syncId, PlayerInventory inventory) {
@@ -54,7 +56,7 @@ public class RollBenchScreenHandler extends ScreenHandler implements ScreenHandl
 
     public RollBenchScreenHandler(int syncId, PlayerInventory playerInventory, ScreenHandlerContext context) {
         super(ModScreenHandlers.ROLL_BENCH_SCREEN_HANDLER, syncId);
-        this.player = playerInventory.player;
+        this.playerEntity = playerInventory.player;
         this.context = context;
         inventory.onOpen(playerInventory.player);
 
@@ -73,7 +75,7 @@ public class RollBenchScreenHandler extends ScreenHandler implements ScreenHandl
         this.addSlot(new Slot(inventory, 1, 145, 52) {
             @Override
             public boolean canInsert(ItemStack stack) {
-                return (stack.getItem() == Items.LAPIS_LAZULI);
+                return stack.isOf(Items.LAPIS_LAZULI) || stack.isOf(Items.ECHO_SHARD);
             }
 
             @Override
@@ -92,9 +94,42 @@ public class RollBenchScreenHandler extends ScreenHandler implements ScreenHandl
     @Override
     public boolean onButtonClick(PlayerEntity player, int id) {
         ItemStack itemStack = inventory.getStack(0);
-        ItemStack lapisLazuliStack = inventory.getStack(1);
-        EnchantmentSlots slots = EnchantmentSlots.fromItemStack(itemStack);
-
+        ItemStack rerollMaterialStack = inventory.getStack(1);
+        var slotsOptional = EnchantmentSlots.fromItemStack(itemStack);
+        if (slotsOptional.isEmpty()) {
+            return onButtonClick(player, id);
+        }
+        var slots = slotsOptional.get();
+        if (id == REROLL_BUTTON_ID) {
+            var serverPlayerEntity = context.get((world, pos) -> world.getServer().getPlayerManager().getPlayer(player.getUuid()));
+            var gilding = slots.getGildingIds();
+            EnchantmentSlots newSlots;
+            if (MCDEnchantments.getConfig().canFullRerollRemoveSlots()) {
+                newSlots = SlotsGenerator.forItemStack(itemStack)
+                    .withOptionalOwner(serverPlayerEntity)
+                    .build()
+                    .generateEnchantments();
+            } else {
+                var generatorBuilder = SlotsGenerator.forItemStack(itemStack)
+                    .withOptionalOwner(serverPlayerEntity);
+                if (slots.getEnchantmentSlot(SlotPosition.SECOND).isPresent()) {
+                    generatorBuilder.withSecondSlotAbsoluteChance(1f);
+                }
+                if (slots.getEnchantmentSlot(SlotPosition.THIRD).isPresent()) {
+                    generatorBuilder.withThirdSlotAbsoluteChance(1f);
+                } 
+                newSlots = generatorBuilder.build().generateEnchantments();
+            }
+            newSlots.addAllGilding(gilding);
+            slots.removeChosenEnchantments(itemStack);
+            newSlots.updateItemStack(itemStack);
+            if (!player.isCreative()) {
+                rerollMaterialStack.decrement(1);
+            }
+            player.playSound(SoundEvents.BLOCK_ENCHANTMENT_TABLE_USE, SoundCategory.BLOCKS, 0.5f, 1f);
+            inventory.markDirty();
+            return false;
+        }
         var slotsSize = SlotPosition.values().length;
         var clickedSlot = slots.getEnchantmentSlot(SlotPosition.values()[id / slotsSize]).get();
         SlotPosition toChange;
@@ -111,6 +146,7 @@ public class RollBenchScreenHandler extends ScreenHandler implements ScreenHandl
             if (!canReroll(player, enchantmentId, slots)) {
                 return super.onButtonClick(player, id);
             }
+            clickedSlot.removeChosenEnchantment(itemStack);
             clickedSlot.clearChoice();
             toChange = chosen.getChoicePosition();
         } else {
@@ -124,7 +160,7 @@ public class RollBenchScreenHandler extends ScreenHandler implements ScreenHandl
 
         clickedSlot.changeEnchantment(toChange, newEnchantment.get());
         if (!player.isCreative()) {
-            lapisLazuliStack.decrement(slots.getNextRerollCost(enchantmentId));
+            rerollMaterialStack.decrement(slots.getNextRerollCost(enchantmentId));
         }
         MCDEnchantments.getConfig().getRerollCostParameters().updateCost(slots);
         slots.updateItemStack(itemStack);
@@ -138,7 +174,7 @@ public class RollBenchScreenHandler extends ScreenHandler implements ScreenHandl
             return true;
         }
         ItemStack lapisLazuliStack = inventory.getStack(1);
-        return lapisLazuliStack.getCount() >= slots.getNextRerollCost(enchantmentId);
+        return lapisLazuliStack.isOf(Items.LAPIS_LAZULI) && lapisLazuliStack.getCount() >= slots.getNextRerollCost(enchantmentId);
     }
 
     @Override
@@ -195,10 +231,14 @@ public class RollBenchScreenHandler extends ScreenHandler implements ScreenHandl
 
     public List<Identifier> getCandidatesForReroll(SlotPosition clickedSlot) {
         var itemStack = inventory.getStack(0);
-        var slots = EnchantmentSlots.fromItemStack(itemStack);
+        var slotsOptional = EnchantmentSlots.fromItemStack(itemStack);
+        if (slotsOptional.isEmpty()) {
+            return List.of();
+        }
+        var slots = slotsOptional.get();
         var candidates = EnchantmentUtils.getEnchantmentsNotInItem(itemStack);
         if (!MCDEnchantments.getConfig().isCompatibilityRequired()) {
-            return candidates.toList();
+            return candidates.collect(Collectors.toList());
         }
         var enchantmentsNotInClickedSlot =
             slots.stream().filter(s -> !s.getSlotPosition().equals(clickedSlot))
@@ -268,10 +308,11 @@ public class RollBenchScreenHandler extends ScreenHandler implements ScreenHandl
 
     @Override
     public void onSlotUpdate(ScreenHandler handler, int slotId, ItemStack stack) {
-        var slots = EnchantmentSlots.fromItemStack(stack);
-        if (slotId != 0 || slots == null) {
+        if (slotId != 0) {
             return;
         }
-        sendLockedSlots(slots, player);
+        EnchantmentSlots.fromItemStack(stack).ifPresent(
+            slots -> sendLockedSlots(slots, playerEntity)
+        );
     }
 }

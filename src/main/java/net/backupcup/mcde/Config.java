@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 
 import blue.endless.jankson.Comment;
 import blue.endless.jankson.Jankson;
@@ -98,6 +99,10 @@ public class Config {
 
     public static enum ListType {
         ALLOW, DENY
+    }
+
+    public static enum GildingMergeStrategy {
+        REMOVE, FIRST, SECOND, BOTH
     }
 
     public static class RerollCost {
@@ -240,8 +245,24 @@ public class Config {
             return third;
         }
 
+        public void setSecondChance(float second) {
+            this.second = second;
+        }
+
+        public void setThirdChance(float third) {
+            this.third = third;
+        }
+
         public static SlotChances add(SlotChances lhs, SlotChances rhs) {
             return new SlotChances(lhs.second + rhs.second, lhs.third + rhs.third);
+        }
+
+        public static SlotChances add(SlotChances lhs, float rhs) {
+            return new SlotChances(lhs.second + rhs, lhs.third + rhs);
+        }
+
+        public static SlotChances apply(SlotChances chances, Function<Float, Float> f) {
+            return new SlotChances(f.apply(chances.second), f.apply(chances.third));
         }
     }
 
@@ -306,6 +327,10 @@ public class Config {
         return allowEnchantingWithBooks;
     }
 
+    public GildingMergeStrategy getGildingMergeStrategy() {
+        return gildingMergeStrategy;
+    }
+
     public int getGildingCost() {
         return gildingCost;
     }
@@ -316,6 +341,10 @@ public class Config {
 
     public boolean isUsingEnchantingTableAllowed() {
         return allowUsingEnchantingTable;
+    }
+
+    public boolean canFullRerollRemoveSlots() {
+        return fullRerollCanRemoveSlots;
     }
 
     public boolean isAvailabilityForRandomSelectionRespected() {
@@ -336,6 +365,10 @@ public class Config {
 
     public float getThirdSlotBaseChance() {
         return thirdSlotBaseChance;
+    }
+
+    public SlotChances getSlotBaseChances() {
+        return new SlotChances(secondSlotBaseChance, thirdSlotBaseChance);
     }
 
     public Map<Identifier, SlotChances> getProgressChances() {
@@ -412,9 +445,12 @@ public class Config {
     @Comment("Sets amount of lapis needed for reroll\n" +
              "For each reroll, the cost is either increased or decreased by step")
     private RerollCostParameters rerollCost = new RerollCostParameters(
-        new RerollCost(30, 3, 3),
-        new RerollCost(50, 5, 5)
+        new RerollCost(15, 1, 3),
+        new RerollCost(25, 3, 5)
     );
+
+    @Comment("Whether a full reroll of enchantment slots can decrease amount of them")
+    private boolean fullRerollCanRemoveSlots = true;
 
     @Comment("Allow mixing items in anvil\n" +
              "On true, vanilla anvil behaviour is applied")
@@ -426,6 +462,13 @@ public class Config {
     @Comment("Whether to allow players to use enchanting table.\n" +
              "Creative players can still use it.")
     private boolean allowUsingEnchantingTable = false;
+    
+    @Comment("Specify gilding merge strategy. Possible values are:\n" +
+             "REMOVE - remove gilding from the result\n" +
+             "FIRST - keep the gilding from first item\n" +
+             "SECOND - keep the gilding from second item\n" +
+             "BOTH - keep both gildings, essentially allowing several gilded enchantments on one item")
+    private GildingMergeStrategy gildingMergeStrategy = GildingMergeStrategy.FIRST;
 
     @Comment("Sets cost of gilding")
     private int gildingCost = 8;
